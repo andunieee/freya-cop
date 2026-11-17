@@ -1,0 +1,178 @@
+use std::{collections::BTreeMap, fmt};
+
+use base64::Engine;
+use rand::RngCore;
+
+/// A COP connection URI: `cop://<endpoint-id>[?_relay=<url>][#<key>=<value>&...]`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CopUri {
+    /// The server's iroh endpoint id: 64 lowercase hex characters.
+    pub endpoint: String,
+    /// The relay to reach the server through, instead of the default ones.
+    pub relay: Option<String>,
+    /// The parameters sent in the `hello`. Never holds `session`: the client generates it.
+    pub params: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UriError(pub String);
+
+impl fmt::Display for UriError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for UriError {}
+
+fn bad(message: impl Into<String>) -> UriError {
+    UriError(message.into())
+}
+
+impl CopUri {
+    pub fn parse(input: &str) -> Result<Self, UriError> {
+        let input = input.trim();
+        let (scheme, rest) = input
+            .split_once("://")
+            .ok_or_else(|| bad("not a cop:// URI"))?;
+        if !scheme.eq_ignore_ascii_case("cop") {
+            return Err(bad("not a cop:// URI"));
+        }
+        let (rest, fragment) = match rest.split_once('#') {
+            Some((rest, fragment)) => (rest, Some(fragment)),
+            None => (rest, None),
+        };
+        let (endpoint, query) = match rest.split_once('?') {
+            Some((endpoint, query)) => (endpoint, Some(query)),
+            None => (rest, None),
+        };
+        let endpoint = endpoint.to_ascii_lowercase();
+        if endpoint.len() != 64 || !endpoint.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(bad("the endpoint id must be 64 hex characters"));
+        }
+
+        let mut relay = None;
+        for pair in query.into_iter().flat_map(|q| q.split('&')) {
+            if let Some(("_relay", value)) = pair.split_once('=') {
+                relay = Some(decode(value)?);
+            }
+        }
+
+        let mut params = BTreeMap::new();
+        if let Some(fragment) = fragment.filter(|f| !f.is_empty()) {
+            for pair in fragment.split('&') {
+                let (key, value) = pair
+                    .split_once('=')
+                    .ok_or_else(|| bad("a parameter has no ="))?;
+                if key.is_empty() {
+                    return Err(bad("a parameter has no name"));
+                }
+                if params.insert(decode(key)?, decode(value)?).is_some() {
+                    return Err(bad("a parameter is repeated"));
+                }
+            }
+        }
+        // The client names the session, whatever the URI says.
+        params.remove("session");
+        Ok(Self {
+            endpoint,
+            relay,
+            params,
+        })
+    }
+
+    /// The display name the URI suggests, until the server sends its metadata.
+    pub fn name(&self) -> Option<&str> {
+        self.params.get("name").map(String::as_str)
+    }
+}
+
+impl fmt::Display for CopUri {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "cop://{}", self.endpoint)?;
+        if let Some(relay) = &self.relay {
+            write!(f, "?_relay={}", encode(relay))?;
+        }
+        let mut sep = '#';
+        for (key, value) in &self.params {
+            write!(f, "{sep}{}={}", encode(key), encode(value))?;
+            sep = '&';
+        }
+        Ok(())
+    }
+}
+
+fn decode(text: &str) -> Result<String, UriError> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let hex = text
+                .get(i + 1..i + 3)
+                .and_then(|h| u8::from_str_radix(h, 16).ok())
+                .ok_or_else(|| bad("bad percent-encoding"))?;
+            out.push(hex);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).map_err(|_| bad("a value is not UTF-8"))
+}
+
+fn encode(text: &str) -> String {
+    text.bytes()
+        .map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (byte as char).to_string()
+            }
+            _ => format!("%{byte:02X}"),
+        })
+        .collect()
+}
+
+/// A fresh `session` string: 128 random bits, as the protocol requires, in base64url.
+pub fn new_session_id() -> String {
+    let mut bytes = [0u8; 16];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ID: &str = "5f1c9d0a27e4b6c38d2f71a09e4b5c6d8a3f2e1b0c9d8e7f6a5b4c3d2e1f0a9b";
+
+    #[test]
+    fn parses_and_prints() {
+        let uri = CopUri::parse(&format!(
+            "COP://{}?_relay=http%3A%2F%2Fr.example#table=12&name=Luigi%27s%20Pizza&session=x",
+            ID.to_uppercase()
+        ))
+        .unwrap();
+        assert_eq!(uri.endpoint, ID);
+        assert_eq!(uri.relay.as_deref(), Some("http://r.example"));
+        assert_eq!(uri.name(), Some("Luigi's Pizza"));
+        assert!(!uri.params.contains_key("session"));
+        assert_eq!(CopUri::parse(&uri.to_string()).unwrap(), uri);
+    }
+
+    #[test]
+    fn rejects_invalid() {
+        assert!(CopUri::parse("cop://abc").is_err());
+        assert!(CopUri::parse(&format!("cop://{ID}#a")).is_err());
+        assert!(CopUri::parse(&format!("cop://{ID}#a=1&a=2")).is_err());
+        assert!(CopUri::parse(&format!("cop://{ID}#=1")).is_err());
+        assert!(CopUri::parse(&format!("http://{ID}")).is_err());
+    }
+
+    #[test]
+    fn sessions_are_long_and_distinct() {
+        let (a, b) = (new_session_id(), new_session_id());
+        assert_eq!(a.len(), 22);
+        assert_ne!(a, b);
+    }
+}
