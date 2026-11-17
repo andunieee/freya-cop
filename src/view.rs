@@ -14,10 +14,7 @@ pub struct CopView {
 }
 
 impl CopView {
-    pub fn new(
-        session: Rc<RefCell<CopSession>>,
-        on_event: impl FnMut(CopEvent) + 'static,
-    ) -> Self {
+    pub fn new(session: Rc<RefCell<CopSession>>, on_event: impl FnMut(CopEvent) + 'static) -> Self {
         Self {
             session,
             on_event: EventHandler::new(on_event),

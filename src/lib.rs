@@ -22,10 +22,10 @@ mod view;
 #[cfg(feature = "web")]
 mod web;
 
+pub use hypereffect::Value;
 pub use link::{Link, LinkEvent, connect};
 pub use session::{CopEvent, CopSession, InvoiceOffer, InvoiceRequest};
 pub use uri::{CopUri, UriError, new_session_id};
 pub use view::CopView;
 #[cfg(feature = "web")]
 pub use web::{ResolveError, resolve};
-pub use hypereffect::Value;

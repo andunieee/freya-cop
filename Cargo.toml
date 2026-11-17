@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2024"
 description = "A Freya client for the Cassis Order Protocol: hypereffect pages over iroh, with invoices in and out."
 license = "MIT"
+readme = "README.md"
+repository = "https://github.com/andunieee/freya-cop"
+documentation = "https://docs.rs/freya-cop"
+keywords = ["gui", "ui", "hypereffect", "freya", "iroh"]
+categories = ["gui", "network-programming"]
 
 [features]
 default = ["web"]
@@ -11,9 +16,9 @@ default = ["web"]
 web = ["dep:reqwest"]
 
 [dependencies]
-freya = { path = "../freya/crates/freya" }
-freya-hypereffect = { path = "../freya-hypereffect" }
-hypereffect = { path = "../hypereffect/rust/hypereffect" }
+freya = "0.6.0-alpha"
+freya-hypereffect = "0.1.0"
+hypereffect = "0.6.3"
 async-channel = "2"
 base64 = "0.22"
 iroh = "1.0.3"
@@ -21,3 +26,6 @@ rand = "0.8"
 tokio = { version = "1", features = ["rt", "sync", "time", "macros", "io-util"] }
 tracing = "0.1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"], optional = true }
+
+[package.metadata.docs.rs]
+all-features = true

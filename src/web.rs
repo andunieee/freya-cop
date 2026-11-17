@@ -90,8 +90,12 @@ async fn fetch(url: &str) -> Result<String, String> {
 /// The `href` of the first `<link rel="... cassis-order ..." href="cop://...">` in the `<head>`.
 fn find_link(html: &str) -> Option<String> {
     let lower = html.to_ascii_lowercase();
-    let start = lower.find("<head").and_then(|i| lower[i..].find('>').map(|j| i + j + 1))?;
-    let end = lower[start..].find("</head").map_or(html.len(), |i| start + i);
+    let start = lower
+        .find("<head")
+        .and_then(|i| lower[i..].find('>').map(|j| i + j + 1))?;
+    let end = lower[start..]
+        .find("</head")
+        .map_or(html.len(), |i| start + i);
     let mut at = start;
     while let Some(i) = lower[at..end].find("<link") {
         let tag_start = at + i + "<link".len();
@@ -100,10 +104,18 @@ fn find_link(html: &str) -> Option<String> {
             at = tag_start;
             continue;
         }
-        let tag_end = lower[tag_start..end].find('>').map_or(end, |j| tag_start + j);
+        let tag_end = lower[tag_start..end]
+            .find('>')
+            .map_or(end, |j| tag_start + j);
         let attrs = attributes(&html[tag_start..tag_end]);
-        let rel = attrs.iter().find(|(k, _)| k == "rel").map(|(_, v)| v.as_str());
-        let href = attrs.iter().find(|(k, _)| k == "href").map(|(_, v)| v.as_str());
+        let rel = attrs
+            .iter()
+            .find(|(k, _)| k == "rel")
+            .map(|(_, v)| v.as_str());
+        let href = attrs
+            .iter()
+            .find(|(k, _)| k == "href")
+            .map(|(_, v)| v.as_str());
         if let (Some(rel), Some(href)) = (rel, href) {
             let wanted = rel
                 .split_ascii_whitespace()

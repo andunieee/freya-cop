@@ -1,9 +1,6 @@
 use std::{str::FromStr, time::Duration};
 
-use iroh::{
-    Endpoint, EndpointAddr, PublicKey, RelayUrl, SecretKey,
-    endpoint::presets,
-};
+use iroh::{Endpoint, EndpointAddr, PublicKey, RelayUrl, SecretKey, endpoint::presets};
 use tokio::{sync::mpsc, task::AbortHandle};
 
 use crate::CopUri;
@@ -83,9 +80,8 @@ async fn run(
         if relay_host_is_onion(relay) {
             return Err("this server is only reachable over Tor, which is not supported".into());
         }
-        addr = addr.with_relay_url(
-            RelayUrl::from_str(relay).map_err(|e| format!("relay {relay}: {e}"))?,
-        );
+        addr = addr
+            .with_relay_url(RelayUrl::from_str(relay).map_err(|e| format!("relay {relay}: {e}"))?);
     }
     let mut builder = Endpoint::builder(presets::N0);
     if let Some(key) = key {
