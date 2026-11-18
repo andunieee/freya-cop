@@ -43,6 +43,8 @@ pub struct CopSession {
     host: ClientHost,
     link: Link,
     events: Events,
+    /// Counts what the server changes outside the view, so the view redraws for it.
+    revision: u64,
 }
 
 impl CopSession {
@@ -79,6 +81,7 @@ impl CopSession {
             host,
             link,
             events,
+            revision: 0,
         }
     }
 
@@ -105,9 +108,13 @@ impl CopSession {
 
     pub fn handle(&mut self, event: LinkEvent) {
         match event {
-            LinkEvent::Data(bytes) => self.host.receive(&bytes),
+            LinkEvent::Data(bytes) => {
+                self.host.receive(&bytes);
+                self.revision += 1;
+            }
             LinkEvent::Closed(reason) => {
                 self.host.close(reason.clone());
+                self.revision += 1;
                 push(&self.events, CopEvent::Closed(reason));
             }
         }
@@ -172,6 +179,10 @@ impl HyperHost for CopSession {
 
     fn act(&mut self, id: &str, event: &str) {
         self.host.act(id, event);
+    }
+
+    fn revision(&self) -> u64 {
+        self.revision
     }
 
     fn error(&self) -> Option<String> {
