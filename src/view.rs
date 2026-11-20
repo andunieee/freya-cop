@@ -1,7 +1,7 @@
 use std::{cell::RefCell, rc::Rc};
 
 use freya::prelude::*;
-use freya_hypereffect::{HyperView, SharedHost};
+use freya_hypereffect::{HyperView, SharedHost, SharedSkin};
 
 use crate::{CopEvent, CopSession};
 
@@ -11,6 +11,7 @@ use crate::{CopEvent, CopSession};
 pub struct CopView {
     session: Rc<RefCell<CopSession>>,
     on_event: EventHandler<CopEvent>,
+    skin: Option<SharedSkin>,
 }
 
 impl CopView {
@@ -18,13 +19,25 @@ impl CopView {
         Self {
             session,
             on_event: EventHandler::new(on_event),
+            skin: None,
         }
+    }
+
+    /// Draw the page's controls with `skin` instead of Freya's own components.
+    pub fn skin(mut self, skin: SharedSkin) -> Self {
+        self.skin = Some(skin);
+        self
     }
 }
 
 impl PartialEq for CopView {
     fn eq(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.session, &other.session)
+            && match (&self.skin, &other.skin) {
+                (Some(a), Some(b)) => Rc::ptr_eq(a, b),
+                (None, None) => true,
+                _ => false,
+            }
     }
 }
 
@@ -56,6 +69,10 @@ impl Component for CopView {
         });
 
         let host: SharedHost = self.session.clone();
-        HyperView::new(host, rev)
+        let view = HyperView::new(host, rev);
+        match &self.skin {
+            Some(skin) => view.skin(skin.clone()),
+            None => view,
+        }
     }
 }
