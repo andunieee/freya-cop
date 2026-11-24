@@ -7,11 +7,17 @@
 //! - [`CopUri`] parses `cop://` URIs and [`resolve`] turns a web address into one.
 //! - [`connect`] dials the server and shuttles bytes; [`CopSession`] is the page (a
 //!   [`freya_hypereffect::HyperHost`]) and the stream of [`CopEvent`]s: an `invoice` the server
-//!   asks to be paid, an `invoicerequest` offering money, and the end of the flow.
+//!   asks to be paid, an `invoicerequest` offering money, and the end of the flow, with the
+//!   server's `close` reason when it gives one ([`SESSION_NOT_FOUND`] if a requested session
+//!   could not be resumed).
 //! - [`CopView`] draws the page and hands the events to the app, which shows **its own** payment
 //!   screen for them: only the client's screen is trustworthy, so none is drawn here.
 //!
-//! An invoice is a [`serde_json::Value`] here: COP never looks inside it. The app hands it to
+//! The `hello` names the flow with a client-generated `session`, carries the URI's fragment
+//! parameters as `params`, and asks for `force_resume` when [`CopSession::open`] reopens a saved
+//! session.
+//!
+//! An invoice is a [`Value`] here: COP never looks inside it. The app hands it to
 //! its payment subsystem, and answers an `invoicerequest` with
 //! [`CopSession::send_invoice`].
 
@@ -24,7 +30,7 @@ mod web;
 
 pub use hypereffect::Value;
 pub use link::{Link, LinkEvent, connect};
-pub use session::{CopEvent, CopSession, InvoiceOffer, InvoiceRequest, Mode};
+pub use session::{CopEvent, CopSession, InvoiceOffer, InvoiceRequest, Mode, SESSION_NOT_FOUND};
 pub use uri::{CopUri, UriError, new_session_id};
 pub use view::CopView;
 #[cfg(feature = "web")]

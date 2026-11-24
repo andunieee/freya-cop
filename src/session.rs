@@ -50,9 +50,23 @@ impl Mode {
 pub enum CopEvent {
     Invoice(InvoiceOffer),
     InvoiceRequest(InvoiceRequest),
-    /// The flow is over; the reason is there if it was not a clean close.
+    /// The flow is over. The reason is the server's `close` reason (such as `session_not_found`)
+    /// when it sent one, else the transport's reason if it was not a clean close.
     Closed(Option<String>),
 }
+
+impl CopEvent {
+    /// The reason a [`CopEvent::Closed`] gave, if any.
+    pub fn close_reason(&self) -> Option<&str> {
+        match self {
+            CopEvent::Closed(reason) => reason.as_deref(),
+            _ => None,
+        }
+    }
+}
+
+/// The reason a server gives when it cannot resume a session the client asked it to.
+pub const SESSION_NOT_FOUND: &str = "session_not_found";
 
 type Events = Arc<Mutex<Vec<CopEvent>>>;
 
@@ -66,10 +80,13 @@ pub struct CopSession {
     events: Events,
     /// Counts what the server changes outside the view, so the view redraws for it.
     revision: u64,
+    /// Whether [`CopEvent::Closed`] was already sent.
+    closed: bool,
 }
 
 impl CopSession {
-    /// Open a flow to `uri`. `session` reopens an earlier flow, `None` starts a new one. `key`
+    /// Open a flow to `uri`. `session` names an earlier flow to reopen, with `force_resume`, so
+    /// the server resumes it or closes with [`SESSION_NOT_FOUND`]; `None` starts a new one. `key`
     /// is the iroh identity to present, `None` for a fresh one.
     pub fn open(
         runtime: &tokio::runtime::Handle,
@@ -77,11 +94,14 @@ impl CopSession {
         session: Option<String>,
         key: Option<[u8; 32]>,
     ) -> Self {
-        let session = session.unwrap_or_else(new_session_id);
+        let resume = session.as_deref().is_some_and(|s| !s.is_empty());
+        let session = match session {
+            Some(session) if !session.is_empty() => session,
+            _ => new_session_id(),
+        };
         let link = connect(runtime, &uri, key);
-        let mut params = uri.params.clone();
-        params.insert("session".into(), session.clone());
-        let mut host = ClientHost::with_hello(link.sender(), &params);
+        let hello = hello(&uri, &session, resume);
+        let mut host = ClientHost::with_hello(link.sender(), &hello);
 
         let events = Events::default();
         let sink = events.clone();
@@ -103,6 +123,7 @@ impl CopSession {
             link,
             events,
             revision: 0,
+            closed: false,
         }
     }
 
@@ -138,12 +159,37 @@ impl CopSession {
             LinkEvent::Data(bytes) => {
                 self.host.receive(&bytes);
                 self.revision += 1;
+                self.report_close(false, None);
             }
             LinkEvent::Closed(reason) => {
-                self.host.close(reason.clone());
+                // A `close` message already ended the session and set its reason on the host:
+                // the transport closing afterwards must not erase it.
+                if self.host.client().closed().is_none() {
+                    self.host.close(reason.clone());
+                }
                 self.revision += 1;
-                push(&self.events, CopEvent::Closed(reason));
+                self.report_close(true, reason);
             }
+        }
+    }
+
+    /// Send [`CopEvent::Closed`] once: with the server's `close` reason if it sent one, else with
+    /// `fallback`, the transport's reason. `ended` says the transport is over, so a clean close
+    /// with no `close` message is still the end of the flow.
+    fn report_close(&mut self, ended: bool, fallback: Option<String>) {
+        if self.closed {
+            return;
+        }
+        match self.host.client().closed() {
+            Some(close) => {
+                self.closed = true;
+                push(&self.events, CopEvent::Closed(close.reason.clone()));
+            }
+            None if ended => {
+                self.closed = true;
+                push(&self.events, CopEvent::Closed(fallback));
+            }
+            None => {}
         }
     }
 
@@ -162,6 +208,25 @@ impl CopSession {
 
 fn push(events: &Events, event: CopEvent) {
     events.lock().unwrap_or_else(|e| e.into_inner()).push(event);
+}
+
+/// The `hello` object: the fragment parameters as `params`, the client's `session`, and
+/// `force_resume` when reopening a saved session.
+fn hello(uri: &CopUri, session: &str, force_resume: bool) -> Map<String, Value> {
+    let mut hello = Map::new();
+    if !uri.params.is_empty() {
+        let params = uri
+            .params
+            .iter()
+            .map(|(key, value)| (key.clone(), Value::String(value.clone())))
+            .collect();
+        hello.insert("params".into(), Value::Object(params));
+    }
+    hello.insert("session".into(), Value::String(session.to_owned()));
+    if force_resume {
+        hello.insert("force_resume".into(), Value::Bool(true));
+    }
+    hello
 }
 
 fn parse_offer(body: &Map<String, Value>) -> Option<InvoiceOffer> {
@@ -212,6 +277,10 @@ impl HyperHost for CopSession {
         self.revision
     }
 
+    fn is_closed(&self) -> bool {
+        self.host.is_closed()
+    }
+
     fn error(&self) -> Option<String> {
         self.host.error()
     }
@@ -238,5 +307,77 @@ mod tests {
         assert_eq!(request.amount_sat, 24000);
         assert_eq!(request.expires_in, Some(900));
         assert!(parse_request(&body(r#"{"amount":1,"networks":[]}"#)).is_none());
+    }
+
+    #[test]
+    fn hello_carries_the_session_and_params() {
+        let uri = CopUri::parse(&format!(
+            "cop://{}#table=12&name=Luigi%27s%20Pizza",
+            "5f1c9d0a27e4b6c38d2f71a09e4b5c6d8a3f2e1b0c9d8e7f6a5b4c3d2e1f0a9b"
+        ))
+        .unwrap();
+
+        // A new flow: the session is a top-level member and there is no `force_resume`.
+        let new = hello(&uri, "abc", false);
+        assert_eq!(new["session"], Value::String("abc".into()));
+        assert_eq!(
+            new["params"],
+            hypereffect::json!({"name": "Luigi's Pizza", "table": "12"})
+        );
+        assert!(!new.contains_key("force_resume"));
+
+        // Reopening one asks the server to resume it or say it cannot.
+        let resume = hello(&uri, "abc", true);
+        assert_eq!(resume["force_resume"], Value::Bool(true));
+
+        // What actually goes on the wire: `hello` with the members above.
+        let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let log = sent.clone();
+        let _host = ClientHost::with_hello(move |line| log.borrow_mut().push(line), &resume);
+        let sent = sent.borrow();
+        let Ok(hypereffect::RendererMessage::Hello(body)) =
+            hypereffect::RendererMessage::parse(sent[0].trim_end())
+        else {
+            panic!("not a hello: {}", sent[0]);
+        };
+        assert_eq!(body, resume);
+
+        // Without fragment parameters the `params` member is omitted.
+        let bare = CopUri::parse(&format!(
+            "cop://{}",
+            "5f1c9d0a27e4b6c38d2f71a09e4b5c6d8a3f2e1b0c9d8e7f6a5b4c3d2e1f0a9b"
+        ))
+        .unwrap();
+        assert!(!hello(&bare, "abc", false).contains_key("params"));
+    }
+
+    #[test]
+    fn close_reason_is_visible() {
+        let event = CopEvent::Closed(Some(SESSION_NOT_FOUND.into()));
+        assert_eq!(event.close_reason(), Some("session_not_found"));
+        assert_eq!(CopEvent::Closed(None).close_reason(), None);
+    }
+
+    #[test]
+    fn close_message_ends_the_flow_with_its_reason() {
+        // A current-thread runtime never polls the link task here, so no connection is made:
+        // the test feeds the session the lines a server would send.
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let uri = CopUri::parse(&format!("cop://{}", "0".repeat(64))).unwrap();
+        let mut session = CopSession::open(runtime.handle(), uri, None, None);
+
+        session.handle(LinkEvent::Data(
+            b"close {\"reason\":\"session_not_found\"}\n".to_vec(),
+        ));
+        assert_eq!(
+            session.take_events(),
+            vec![CopEvent::Closed(Some(SESSION_NOT_FOUND.into()))]
+        );
+
+        // The transport closing after the message does not report the end twice.
+        session.handle(LinkEvent::Closed(None));
+        assert!(session.take_events().is_empty());
     }
 }
