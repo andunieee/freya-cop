@@ -24,7 +24,7 @@ mod web;
 
 pub use hypereffect::Value;
 pub use link::{Link, LinkEvent, connect};
-pub use session::{CopEvent, CopSession, InvoiceOffer, InvoiceRequest};
+pub use session::{CopEvent, CopSession, InvoiceOffer, InvoiceRequest, Mode};
 pub use uri::{CopUri, UriError, new_session_id};
 pub use view::CopView;
 #[cfg(feature = "web")]

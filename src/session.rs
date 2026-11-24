@@ -24,6 +24,27 @@ pub struct InvoiceRequest {
     pub expires_in: Option<u64>,
 }
 
+/// How the connection URI that opened a flow may be used: the `mode` of the server's metadata.
+/// With no `mode`, it is reusable.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Mode {
+    /// It may start any number of flows, for anyone.
+    #[default]
+    Reusable,
+    /// It is meant to start one flow: keep its session, but don't start a new flow from it again.
+    SingleUse,
+}
+
+impl Mode {
+    /// The mode a `mode` value names, `None` for one COP does not define: it is ignored.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "single_use" => Some(Self::SingleUse),
+            _ => None,
+        }
+    }
+}
+
 /// What the server did that is not about the page.
 #[derive(Clone, Debug, PartialEq)]
 pub enum CopEvent {
@@ -98,6 +119,12 @@ impl CopSession {
     pub fn name(&mut self) -> Option<String> {
         let name = self.host.client().metadata().name.clone();
         name.or_else(|| self.uri.name().map(str::to_owned))
+    }
+
+    /// How the URI that opened this flow may be used, as the server's metadata says.
+    pub fn mode(&mut self) -> Mode {
+        let mode = self.host.client().metadata().extra.get("mode");
+        mode.and_then(|m| Mode::parse(m)).unwrap_or_default()
     }
 
     /// Where the events of the stream arrive. Await them, and give each to
