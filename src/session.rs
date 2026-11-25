@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use freya_hypereffect::{ClientHost, HyperHost};
-use hypereffect::{Map, Value, client::ResolvedTree, message::encode_line};
+use hypereffect::{Map, Metadata, Value, client::ResolvedTree, message::encode_line};
 
 use crate::{CopUri, Link, LinkEvent, connect, new_session_id};
 
@@ -82,6 +82,8 @@ pub struct CopSession {
     revision: u64,
     /// Whether [`CopEvent::Closed`] was already sent.
     closed: bool,
+    /// Whether the server sent its metadata.
+    has_metadata: bool,
 }
 
 impl CopSession {
@@ -124,6 +126,7 @@ impl CopSession {
             events,
             revision: 0,
             closed: false,
+            has_metadata: false,
         }
     }
 
@@ -142,6 +145,12 @@ impl CopSession {
         name.or_else(|| self.uri.name().map(str::to_owned))
     }
 
+    /// The metadata the server sent, `None` until it sends some. A server may never send it.
+    pub fn metadata(&mut self) -> Option<Metadata> {
+        self.has_metadata
+            .then(|| self.host.client().metadata().clone())
+    }
+
     /// How the URI that opened this flow may be used, as the server's metadata says.
     pub fn mode(&mut self) -> Mode {
         let mode = self.host.client().metadata().extra.get("mode");
@@ -158,6 +167,7 @@ impl CopSession {
         match event {
             LinkEvent::Data(bytes) => {
                 self.host.receive(&bytes);
+                self.has_metadata |= self.host.client().take_changes().metadata;
                 self.revision += 1;
                 self.report_close(false, None);
             }
@@ -349,6 +359,28 @@ mod tests {
         ))
         .unwrap();
         assert!(!hello(&bare, "abc", false).contains_key("params"));
+    }
+
+    #[test]
+    fn metadata_is_there_once_the_server_sends_it() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let uri = CopUri::parse(&format!("cop://{}", "0".repeat(64))).unwrap();
+        let mut session = CopSession::open(runtime.handle(), uri, None, None);
+        assert_eq!(session.metadata(), None);
+
+        session.handle(LinkEvent::Data(b"signal {\"count\":1}\n".to_vec()));
+        assert_eq!(session.metadata(), None);
+
+        session.handle(LinkEvent::Data(
+            b"metadata {\"name\":\"Luigi\",\"icon\":\"data:,x\",\"mode\":\"single_use\"}\n"
+                .to_vec(),
+        ));
+        let metadata = session.metadata().unwrap();
+        assert_eq!(metadata.name.as_deref(), Some("Luigi"));
+        assert_eq!(metadata.icon.as_deref(), Some("data:,x"));
+        assert_eq!(session.mode(), Mode::SingleUse);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 [package]
 name = "freya-cop"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 description = "A Freya client for the Cassis Order Protocol: hypereffect pages over iroh, with invoices in and out."
 license = "MIT"
@@ -17,7 +17,7 @@ web = ["dep:reqwest"]
 
 [dependencies]
 freya = "0.6.0-alpha"
-freya-hypereffect = "0.2.1"
+freya-hypereffect = "0.2.2"
 hypereffect = "0.7.0"
 async-channel = "2"
 base64 = "0.22"
