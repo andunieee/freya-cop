@@ -10,18 +10,14 @@ use crate::{CopUri, Link, LinkEvent, connect, new_session_id};
 pub struct InvoiceOffer {
     /// The Cassis invoice, as the server sent it. COP never looks inside.
     pub invoice: Value,
-    /// A short note from the server. Amount and payee come from the invoice, not from this.
-    pub memo: Option<String>,
 }
 
 /// An `invoicerequest`: the server offers money and asks for an invoice to pay it with.
 #[derive(Clone, Debug, PartialEq)]
 pub struct InvoiceRequest {
     pub amount_sat: u64,
-    /// The Cassis network ids the server can pay from.
-    pub networks: Vec<String>,
-    pub memo: Option<String>,
-    pub expires_in: Option<u64>,
+    /// A description to show the user and put in the generated invoice.
+    pub description: Option<String>,
 }
 
 /// How the connection URI that opened a flow may be used: the `mode` of the server's metadata.
@@ -241,28 +237,17 @@ fn hello(uri: &CopUri, session: &str, force_resume: bool) -> Map<String, Value> 
 
 fn parse_offer(body: &Map<String, Value>) -> Option<InvoiceOffer> {
     let invoice = body.get("invoice").filter(|i| i.is_object())?.clone();
-    Some(InvoiceOffer {
-        invoice,
-        memo: body.get("memo").and_then(Value::as_str).map(str::to_owned),
-    })
+    Some(InvoiceOffer { invoice })
 }
 
 fn parse_request(body: &Map<String, Value>) -> Option<InvoiceRequest> {
     let amount_sat = body.get("amount")?.as_u64()?;
-    let networks: Vec<String> = body
-        .get("networks")?
-        .as_array()?
-        .iter()
-        .filter_map(|n| n.as_str().map(str::to_owned))
-        .collect();
-    if networks.is_empty() {
-        return None;
-    }
     Some(InvoiceRequest {
         amount_sat,
-        networks,
-        memo: body.get("memo").and_then(Value::as_str).map(str::to_owned),
-        expires_in: body.get("expiresIn").and_then(Value::as_u64),
+        description: body
+            .get("description")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
     })
 }
 
@@ -306,17 +291,20 @@ mod tests {
             Value::Object(m) => m,
             _ => unreachable!(),
         };
-        let offer = parse_offer(&body(r#"{"invoice":{"a":1},"memo":"x"}"#)).unwrap();
-        assert_eq!(offer.memo.as_deref(), Some("x"));
+        let offer = parse_offer(&body(r#"{"invoice":{"a":1}}"#)).unwrap();
+        assert_eq!(offer.invoice, hypereffect::json!({"a": 1}));
         assert!(parse_offer(&body(r#"{"memo":"x"}"#)).is_none());
 
         let request = parse_request(&body(
-            r#"{"amount":24000,"networks":["liquid","cashu::m.example"],"expiresIn":900}"#,
+            r#"{"amount":24000,"description":"Refund for unused days"}"#,
         ))
         .unwrap();
         assert_eq!(request.amount_sat, 24000);
-        assert_eq!(request.expires_in, Some(900));
-        assert!(parse_request(&body(r#"{"amount":1,"networks":[]}"#)).is_none());
+        assert_eq!(
+            request.description.as_deref(),
+            Some("Refund for unused days")
+        );
+        assert!(parse_request(&body(r#"{"description":"x"}"#)).is_none());
     }
 
     #[test]
